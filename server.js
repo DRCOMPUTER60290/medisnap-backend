@@ -16,7 +16,21 @@ app.use(
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
-app.post("/api/scan", async (req, res) => {
+function requireAppKey(req, res, next) {
+  const secret = process.env.APP_SECRET;
+  if (!secret) return next();
+  
+  const key = req.headers["x-app-key"];
+  if (key !== secret) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  return next();
+}
+
+
+
+
+app.post("/api/scan", requireAppKey, async (req, res) => {
   try {
     const { imageBase64 } = req.body;
     if (!imageBase64) return res.status(400).json({ error: "imageBase64 manquant" });
