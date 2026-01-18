@@ -10,7 +10,7 @@ app.use(express.json({ limit: "10mb" }));
 app.use(
   rateLimit({
     windowMs: 60 * 1000,
-    max: 20, // 20 requêtes/minute par IP (à ajuster)
+    max: 20,
   })
 );
 
@@ -21,60 +21,82 @@ app.post("/api/scan", async (req, res) => {
     const { imageBase64 } = req.body;
     if (!imageBase64) return res.status(400).json({ error: "imageBase64 manquant" });
 
-    // IMPORTANT: clé OpenAI stockée dans Render (Environment Variables)
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "OPENAI_API_KEY non configurée" });
 
-    const prompt = `Tu analyses une photo de boîte de médicament ou ordonnance manuscrite.
-Retourne UNIQUEMENT un JSON valide.
-Schéma:
-{
-  "name": string|null,
-  "category": "douleur/fièvre"|"rhume/grippe"|"digestif"|"allergie"|"dermatologie"|"antibiotique"|"vitamines"|"autres"|null,
-  "expiryDate": "YYYY-MM-DD"|null,
-  "confidence": number
-}`;
-
-    // Appel OpenAI (format générique; tu adapteras selon le SDK que tu utilises)
-    const response = await fetch("https://api.openai.com/v1/responses", {
+    // Appel correct à l'API OpenAI
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        input: [
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `Tu analyses une photo de boîte de médicament. IMPORTANT: Inclus le dosage complet dans le nom (ex: "Doliprane 500mg" PAS "Doliprane").
+
+Retourne UNIQUEMENT un JSON valide:
+{
+  "name": "nom avec dosage (mg, g, ml, etc.) ou null",
+  "category": "douleur/fièvre"|"rhume/grippe"|"digestif"|"allergie"|"dermatologie"|"antibiotique"|"antifongique"|"antiviral"|"cardiovasculaire"|"diabète"|"cholestérol"|"hypertension"|"thyroïde"|"psychiatrie/neurologie"|"anxiolytique"|"antidépresseur"|"somnifère"|"ophtalmologie"|"ORL"|"respiratoire/asthme"|"rhumatologie"|"vitamines/minéraux"|"contraception"|"urologie"|"autres",
+  "expiryDate": "YYYY-MM-DD"|null,
+  "confidence": 0.0-1.0
+}
+
+Règles:
+- TOUJOURS inclure le dosage dans le nom
+- Cherche la date de péremption (EXP, Péremption)
+- Si image floue, retourne name: null`,
+          },
           {
             role: "user",
             content: [
-              { type: "input_text", text: prompt },
-              { type: "input_image", image_url: `data:image/jpeg;base64,${imageBase64}` }
+              {
+                type: "text",
+                text: "Extrais les informations du médicament. Retourne uniquement JSON.",
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${imageBase64}`,
+                },
+              },
             ],
           },
         ],
+        max_tokens: 500,
+        response_format: { type: "json_object" },
       }),
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      return res.status(500).json({ error: "OpenAI error", details: errText });
+      const errData = await response.json();
+      return res.status(500).json({ 
+        error: "OpenAI error", 
+        details: errData.error?.message || "Erreur API" 
+      });
     }
 
     const data = await response.json();
+    const content = data.choices[0]?.message?.content;
 
-    // Selon le format exact retourné, récupère le texte JSON
-    // Ici on suppose que le modèle renvoie du texte JSON dans output_text
-    const outputText = data.output_text ?? "";
+    if (!content) {
+      return res.status(500).json({ error: "Pas de réponse OpenAI" });
+    }
+
     let parsed;
     try {
-      parsed = JSON.parse(outputText);
+      parsed = JSON.parse(content);
     } catch {
-      return res.status(422).json({ error: "JSON invalide", raw: outputText });
+      return res.status(422).json({ error: "JSON invalide", raw: content });
     }
 
     return res.json(parsed);
   } catch (e) {
+    console.error("Server error:", e);
     return res.status(500).json({ error: "Server error", details: String(e) });
   }
 });
